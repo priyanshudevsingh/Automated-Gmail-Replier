@@ -1,12 +1,12 @@
+// Importing required modules and libraries
 const express = require("express");
 const app = express();
-
 const fs = require("fs").promises;
 const path = require("path");
 const { authenticate } = require("@google-cloud/local-auth");
 const { google } = require("googleapis");
 
-// scopes needed for doing necessary functions with gmail
+// Scopes needed for necessary Gmail operations
 const SCOPES = [
   "https://www.googleapis.com/auth/gmail.readonly",
   "https://www.googleapis.com/auth/gmail.send",
@@ -14,8 +14,9 @@ const SCOPES = [
   "https://mail.google.com/",
 ];
 
+// Handling the root route
 app.get("/", async (req, res) => {
-  // authorizing the client with credentials
+  // Authorizing the client with credentials
   const auth = await authenticate({
     keyfilePath: path.join(__dirname, "./credentials.json"),
     scopes: SCOPES,
@@ -23,76 +24,90 @@ app.get("/", async (req, res) => {
 
   console.log("Authentication Successful");
 
-  const gmail = google.gmail({ version: "v1", auth });
+  const labelName = "During Vacation"; // Label name for identifying vacation-related emails
 
-  const labelName = "During Vacation";
-
-  // loading credentials
+  // Loading credentials from file
   async function loadCredentials() {
     const filePath = path.join(process.cwd(), "credentials.json");
     const content = await fs.readFile(filePath, { encoding: "utf-8" });
     return JSON.parse(content);
   }
 
-  // getting msgs with no replies
+  // Getting unreplied messages from Gmail
   async function gettingUnrepliedMsgs(auth) {
     const gmail = google.gmail({ version: "v1", auth });
-    const res = await gmail.users.messages.list({
-      userId: "me",
-      q: "-in:chats -from:me -has:userlabels",
-    });
-    return res.data.messages || [];
+    try {
+      const res = await gmail.users.messages.list({
+        userId: "me",
+        q: "-in:chats -from:me -has:userlabels",
+      });
+      return res.data.messages || [];
+    } catch (err) {
+      console.error("Error getting unreplied messages:", err);
+    }
   }
 
-  // sending reply
+  // Sending a reply to a given message
   async function sendReply(auth, message) {
     const gmail = google.gmail({ version: "v1", auth });
-    const res = await gmail.users.messages.get({
-      userId: "me",
-      id: message.id,
-      format: "metadata",
-      metadataHeaders: ["Subject", "From"],
-    });
+    try {
+      // Getting message details for constructing the reply
+      const res = await gmail.users.messages.get({
+        userId: "me",
+        id: message.id,
+        format: "metadata",
+        metadataHeaders: ["Subject", "From"],
+      });
 
-    const subject = res.data.payload.headers.find(
-      (header) => header.name === "Subject"
-    ).value;
-    const from = res.data.payload.headers.find(
-      (header) => header.name === "From"
-    ).value;
+      // Extracting subject and sender information
+      const subject = res.data.payload.headers.find(
+        (header) => header.name === "Subject"
+      ).value;
+      const from = res.data.payload.headers.find(
+        (header) => header.name === "From"
+      ).value;
 
-    const replyTo = from.match(/<(.*)>/)[1];
-    const replySubject = subject.startsWith("Reply:")
-      ? subject
-      : `Reply: ${subject}`;
-    const replyBody = `Hi,\n\nThanks for reaching out.\n\nCurrently I'm on vacation and will reply to you the day after tomorrow.`;
+      // Extracting the email address from sender information
+      const replyTo = from.match(/<(.*)>/)[1];
 
-    const rawMessage = [
-      `From: me`,
-      `To: ${replyTo}`,
-      `Subject: ${replySubject}`,
-      `In-Reply-To: ${message.id}`,
-      `References: ${message.id}`,
-      "",
-      replyBody,
-    ].join("\n");
+      // Creating reply subject and body
+      const replySubject = subject.startsWith("Reply:")
+        ? subject
+        : `Reply: ${subject}`;
+      const replyBody = `Hi,\n\nThanks for reaching out.\n\nCurrently I'm on vacation and will reply to you the day after tomorrow.`;
 
-    await gmail.users.messages.send({
-      userId: "me",
-      requestBody: {
-        raw: Buffer.from(rawMessage)
-          .toString("base64")
-          .replace(/\+/g, "-")
-          .replace(/\//g, "_")
-          .replace(/=+$/, ""),
-      },
-    });
+      // Constructing raw message
+      const rawMessage = [
+        `From: me`,
+        `To: ${replyTo}`,
+        `Subject: ${replySubject}`,
+        `In-Reply-To: ${message.id}`,
+        `References: ${message.id}`,
+        "",
+        replyBody,
+      ].join("\n");
+
+      // Sending the reply
+      await gmail.users.messages.send({
+        userId: "me",
+        requestBody: {
+          raw: Buffer.from(rawMessage)
+            .toString("base64")
+            .replace(/\+/g, "-")
+            .replace(/\//g, "_")
+            .replace(/=+$/, ""),
+        },
+      });
+    } catch (err) {
+      console.error("Error sending reply:", err);
+    }
   }
 
-  // creating label
+  // Creating a label for vacation-related emails
   async function createLabel(auth) {
     const gmail = google.gmail({ version: "v1", auth });
     try {
+      // Fetching existing labels
       const labelsResponse = await gmail.users.labels.list({ userId: "me" });
       const label = labelsResponse.data.labels.find(
         (label) => label.name === labelName
@@ -114,53 +129,64 @@ app.get("/", async (req, res) => {
         return newLabel.data.id;
       }
     } catch (err) {
-      console.error("Error adding label and moving email:", err);
+      console.error("Error creating label and moving email:", err);
     }
   }
 
-  // adding label to msgs
+  // Adding the vacation label to a message
   async function addLabel(auth, message, labelId) {
     const gmail = google.gmail({ version: "v1", auth });
-    await gmail.users.messages.modify({
-      userId: "me",
-      id: message.id,
-      requestBody: {
-        addLabelIds: [labelId],
-        removeLabelIds: ["INBOX"],
-      },
-    });
+    try {
+      // Modifying the labels of the message
+      await gmail.users.messages.modify({
+        userId: "me",
+        id: message.id,
+        requestBody: {
+          addLabelIds: [labelId],
+          removeLabelIds: ["INBOX"],
+        },
+      });
+    } catch (err) {
+      console.error("Error adding label to meassage:", err);
+    }
   }
 
   // App Functions Starts
   loadCredentials();
-  // creating label
+
+  // Creating a label for vacation-related emails
   const labelId = await createLabel(auth);
   console.log(`Label Created with id ${labelId}`);
 
+  // Function to periodically check for unreplied messages and respond
   async function checkEmails() {
-    // getting all msgs in an array with no replies
+    // Getting all messages with no replies
     const messages = await gettingUnrepliedMsgs(auth);
     console.log(`${messages.length} Unreplied Messages Found`);
 
+    // Processing each unreplied message
     for (let msg of messages) {
-      // sending reply
+      // Sending a reply
       await sendReply(auth, msg);
       console.log(`Reply sent to message with id ${msg.id}`);
 
-      // adding label to message
+      // Adding the vacation label to the message
       await addLabel(auth, msg, labelId);
       console.log(`Label added to message with id ${msg.id}`);
     }
   }
 
+  // Setting up periodic email checking with a random interval between 45 to 120 seconds
   setInterval(
     checkEmails,
     Math.floor(Math.random() * (120 - 45 + 1) + 45) * 1000
   );
 
+  // Sending a success response to the client
   res.send("Successfully logged in to the Automated Gmail Responser");
 });
 
+// Starting the server on port 5000
 app.listen(5000, () => {
   console.log("App is Running");
 });
